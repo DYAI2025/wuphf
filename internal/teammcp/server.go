@@ -279,6 +279,14 @@ func configureServerTools(server *mcp.Server, slug string, channel string, oneOn
 	if slug == "artist" {
 		registerImageTools(server)
 	}
+	// Designer-track roles can escalate hard visual work to the local
+	// open-design daemon. CEO and CMO are included because they own
+	// pitch decks, weekly updates, and external-facing content where a
+	// real artifact (vs prose) is the deliverable.
+	switch slug {
+	case "designer", "cmo", "ceo":
+		registerOpenDesignTools(server)
+	}
 	registerContextTools(server)
 	registerSharedMemoryTools(server)
 
