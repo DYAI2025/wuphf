@@ -260,6 +260,12 @@ func TestResolveGeminiAPIKeyFallbackEnv(t *testing.T) {
 
 func TestResolveGeminiAPIKeyConfig(t *testing.T) {
 	withTempConfig(t, func(_ string) {
+		// Isolate from the developer's real environment: ResolveGeminiAPIKey
+		// checks WUPHF_GEMINI_API_KEY and GEMINI_API_KEY before falling back
+		// to the config file, so a host-level GEMINI_API_KEY would shadow
+		// the config value this test is asserting.
+		t.Setenv("WUPHF_GEMINI_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
 		_ = Save(Config{GeminiAPIKey: "cfg-gemini"})
 		if got := ResolveGeminiAPIKey(); got != "cfg-gemini" {
 			t.Fatalf("expected config fallback, got %q", got)
