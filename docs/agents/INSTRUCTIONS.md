@@ -154,6 +154,73 @@ All load-time optional. Core is `broker + launcher + headless runners + worktree
 - **OpenClaw** (`--provider openclaw-http`) — OpenClaw Gateway bridge
 - **Hermes** (`--provider hermes-agent`) — local Hermes gateway
 
+## Local-First Models (Default)
+
+The install-wide default LLM provider is **`ollama`**. First-run wuphf
+needs no API keys — only a running `ollama serve` daemon with the three
+models the agents are tuned for:
+
+| Model            | Default agent fit                   | Pull size |
+|------------------|-------------------------------------|-----------|
+| `gemma4:e4b`     | reasoning, planning, conversation   | ~3 GB     |
+| `qwen2.5-coder:7b` | code generation, refactoring      | ~5 GB     |
+| `llama3.1:8b`    | long context, content, design copy  | ~5 GB     |
+
+One-shot pull: `scripts/setup-local-models.sh` (add `--large` on 64 GB+
+machines to also grab `gemma4:26b`, `qwen2.5-coder:32b`, `llama3.1:70b`).
+
+### Per-agent model binding
+
+A single `ollama serve` can host all three models simultaneously. Pin a
+different model per agent slug to send the engineer to Qwen-coder and
+the designer to Llama without spinning up separate provider Kinds:
+
+```jsonc
+// ~/.wuphf/config.json
+{
+  "llm_provider": "ollama",
+  "provider_endpoints": {
+    "ollama": {
+      "model": "gemma4:e4b",
+      "models_by_agent": {
+        "eng": "qwen2.5-coder:14b",
+        "fe":  "qwen2.5-coder:7b",
+        "be":  "qwen2.5-coder:14b",
+        "designer": "llama3.1:8b",
+        "cmo": "llama3.1:8b",
+        "ceo": "gemma4:e4b"
+      }
+    }
+  }
+}
+```
+
+Env equivalents take precedence: `WUPHF_OLLAMA_MODEL_<SLUG>` (slug
+upper-cased, `-` → `_`). Cloud providers (claude-code, codex, opencode)
+remain available via `--provider` override and `WUPHF_LLM_PROVIDER`.
+
+## Open-Design Fallback (Designer / CMO / CEO)
+
+For visual work that needs real pixels (decks, posters, landing pages,
+dashboard mocks), the Designer, CMO, and CEO agents can call into a
+local open-design daemon (`https://github.com/DYAI2025/open-design`).
+Five MCP tools are exposed when the agent slug matches:
+
+- `open_design_list_skills` (filter by scenario)
+- `open_design_list_templates`
+- `open_design_create_artifact`
+- `open_design_list_artifacts`
+- `open_design_refresh_artifact`
+
+The agent decides — no router on the wuphf side. When the open-design
+daemon isn't running, every tool returns a one-line "start the daemon"
+message and the agent falls back to its local model.
+
+Setup: `scripts/setup-open-design.sh` clones open-design next to wuphf
+and runs `pnpm install`. Start the daemon manually with
+`cd ../open-design && pnpm tools-dev`. Override its URL via
+`WUPHF_OPEN_DESIGN_URL` (default `http://127.0.0.1:7878`).
+
 ## Reference Docs
 
 Top-level docs worth reading before substantial work:
