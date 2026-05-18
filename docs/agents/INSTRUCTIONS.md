@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> `CLAUDE.md` is a symlink to `docs/agents/INSTRUCTIONS.md` — edit the target,
+> not the link. Same applies to `AGENTS.md`.
+
 ## What Is WUPHF
 
 WUPHF is a collaborative office for AI employees with a shared brain. It runs
@@ -26,6 +29,26 @@ go build -o wuphf ./cmd/wuphf
 
 # Run
 ./wuphf
+```
+
+`cmd/` also contains auxiliary binaries — build them by path when needed:
+`bench-slice-1`, `eval-prompts`, `review-bundle-handoff`, `wuphfbench`,
+`wuphf-oc-probe`, `wuphf-seed`, `youtube-script-packet`.
+
+### Workspace scripts (root `package.json`)
+
+Root-level shortcuts that fan out to `packages/*` and `apps/*`:
+
+```bash
+bun run broker:test                  # packages/broker tests
+bun run broker:typecheck
+bun run broker:check:invariants
+bun run desktop:dev                  # apps/desktop dev mode
+bun run desktop:build
+bun run desktop:test
+bun run desktop:check:ipc-allowlist
+bun run installer:build:dry-run
+bun run installer:check:secrets
 ```
 
 ### Test
@@ -130,6 +153,20 @@ All load-time optional. Core is `broker + launcher + headless runners + worktree
 - **Composio** (`--action provider`) — real-world actions
 - **OpenClaw** (`--provider openclaw-http`) — OpenClaw Gateway bridge
 - **Hermes** (`--provider hermes-agent`) — local Hermes gateway
+
+## Reference Docs
+
+Top-level docs worth reading before substantial work:
+
+| File | When to read |
+|------|--------------|
+| `ARCHITECTURE.md` | system-wide design before structural changes |
+| `DESIGN.md` / `DESIGN-NOTEBOOK.md` / `DESIGN-WIKI.md` | UX/product design decisions |
+| `PLAN.md`, `TODOS.md`, `CHANGELOG.md`, `PHASE-0-LEDGER.md` | current roadmap + recent shipped work |
+| `CONTRIBUTING.md` | contributor workflow details |
+| `FORKING.md` | downstream/fork policy |
+| `TESTING-WIKI.md` | flake handling, coverage conventions |
+| `.rules` | Nex MCP tooling context (proactive `<nex-context>` blocks) |
 
 ## Git and PR Rules
 
