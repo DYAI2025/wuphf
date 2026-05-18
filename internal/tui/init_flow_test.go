@@ -39,8 +39,8 @@ func TestInitFlowSkipsToBlueprintWhenAPIKeyExists(t *testing.T) {
 	if flow.Phase() != InitProviderChoice {
 		t.Fatalf("expected provider choice phase, got %q", flow.Phase())
 	}
-	if flow.provider != "claude-code" {
-		t.Fatalf("expected provider to default to claude-code, got %q", flow.provider)
+	if flow.provider != "ollama" {
+		t.Fatalf("expected provider to default to ollama (local-first), got %q", flow.provider)
 	}
 }
 

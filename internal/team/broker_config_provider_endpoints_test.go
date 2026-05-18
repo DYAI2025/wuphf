@@ -60,8 +60,8 @@ func TestHandleConfigReportsProviderConfiguredSource(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode GET /config: %v", err)
 	}
-	if provider, _ := cfg["llm_provider"].(string); provider != "claude-code" {
-		t.Fatalf("expected default provider claude-code, got %q", provider)
+	if provider, _ := cfg["llm_provider"].(string); provider != "ollama" {
+		t.Fatalf("expected default provider ollama (local-first), got %q", provider)
 	}
 	if configured, _ := cfg["llm_provider_configured"].(bool); configured {
 		t.Fatalf("expected default provider to be reported as not configured: %s", rec.Body.String())
