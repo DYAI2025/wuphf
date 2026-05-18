@@ -117,6 +117,101 @@ func TestResolveProviderEndpoint_KindWithDashesMapsToEnvUnderscore(t *testing.T)
 	})
 }
 
+// TestResolveProviderModelForAgent_EmptySlug verifies the empty-slug guard:
+// callers without an agent context get "" and fall through to the install-
+// wide model rather than picking up a stray WUPHF_<KIND>_MODEL_ variable.
+func TestResolveProviderModelForAgent_EmptySlug(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		t.Setenv("WUPHF_OLLAMA_MODEL_", "should-not-leak")
+		got := ResolveProviderModelForAgent("ollama", "")
+		if got != "" {
+			t.Errorf("got %q, want empty (no slug context)", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_EnvOverridesConfig confirms the env layer
+// (WUPHF_OLLAMA_MODEL_FE) wins over the config-file ModelsByAgent map for the
+// same slug — matching ResolveProviderEndpoint's env>config>default order.
+func TestResolveProviderModelForAgent_EnvOverridesConfig(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{"fe": "configured-model"}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_FE", "env-model")
+
+		got := ResolveProviderModelForAgent("ollama", "fe")
+		if got != "env-model" {
+			t.Errorf("got %q, want env-model", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_ConfigUsedWhenEnvAbsent confirms the
+// config-file path: env unset → ModelsByAgent[slug] is returned.
+func TestResolveProviderModelForAgent_ConfigUsedWhenEnvAbsent(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{
+					"eng":      "qwen2.5-coder:14b",
+					"designer": "llama3.1:8b",
+				}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_ENG", "")
+		t.Setenv("WUPHF_OLLAMA_MODEL_DESIGNER", "")
+
+		if got := ResolveProviderModelForAgent("ollama", "eng"); got != "qwen2.5-coder:14b" {
+			t.Errorf("eng: got %q, want qwen2.5-coder:14b", got)
+		}
+		if got := ResolveProviderModelForAgent("ollama", "designer"); got != "llama3.1:8b" {
+			t.Errorf("designer: got %q, want llama3.1:8b", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_UnknownSlugReturnsEmpty confirms an agent
+// without an explicit binding falls through (caller uses install-wide model).
+func TestResolveProviderModelForAgent_UnknownSlugReturnsEmpty(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{"eng": "qwen2.5-coder:14b"}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_QA", "")
+
+		if got := ResolveProviderModelForAgent("ollama", "qa"); got != "" {
+			t.Errorf("qa (unbound): got %q, want empty", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_SlugCaseNormalized confirms slug lookup is
+// case-insensitive on the env-var name and on the config map key — config
+// writers using "FE" or "Fe" should still hit the "fe" map entry.
+func TestResolveProviderModelForAgent_SlugCaseNormalized(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{"fe": "qwen2.5-coder:7b"}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_FE", "")
+
+		if got := ResolveProviderModelForAgent("ollama", "FE"); got != "qwen2.5-coder:7b" {
+			t.Errorf("uppercase slug: got %q, want match against lowercase config key", got)
+		}
+	})
+}
+
 func writeTestConfig(t *testing.T, dir string, cfg Config) {
 	t.Helper()
 	path := filepath.Join(dir, ".wuphf", "config.json")

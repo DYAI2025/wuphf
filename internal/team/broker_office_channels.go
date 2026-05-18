@@ -122,6 +122,24 @@ func validateProviderEndpointURL(raw string) error {
 	return nil
 }
 
+// providerEndpointEqual returns true when a and b carry the same BaseURL,
+// Model, and ModelsByAgent contents. Needed because adding the map field to
+// ProviderEndpoint made the struct non-comparable with ==.
+func providerEndpointEqual(a, b config.ProviderEndpoint) bool {
+	if a.BaseURL != b.BaseURL || a.Model != b.Model {
+		return false
+	}
+	if len(a.ModelsByAgent) != len(b.ModelsByAgent) {
+		return false
+	}
+	for k, v := range a.ModelsByAgent {
+		if bv, ok := b.ModelsByAgent[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
 // handleConfig exposes GET/POST over ~/.wuphf/config.json for the web UI
 // settings page and onboarding wizard. All POST fields are optional; clients
 // can update one without touching the others. Secret fields (API keys, tokens)
@@ -502,8 +520,8 @@ func (b *Broker) handleConfig(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
-				if ep.BaseURL == "" && ep.Model == "" {
-					// Treat the empty-empty case as a clear so the user can
+				if ep.BaseURL == "" && ep.Model == "" && len(ep.ModelsByAgent) == 0 {
+					// Treat the all-empty case as a clear so the user can
 					// drop their override and fall back to compile-time
 					// defaults without hand-editing config.json.
 					if _, existed := cfg.ProviderEndpoints[k]; existed {
@@ -512,7 +530,7 @@ func (b *Broker) handleConfig(w http.ResponseWriter, r *http.Request) {
 					}
 				} else {
 					prev, existed := cfg.ProviderEndpoints[k]
-					if !existed || prev != ep {
+					if !existed || !providerEndpointEqual(prev, ep) {
 						cfg.ProviderEndpoints[k] = ep
 						changed = true
 					}

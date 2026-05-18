@@ -413,10 +413,13 @@ func TestResolveActionProviderUsesConfig(t *testing.T) {
 	})
 }
 
-func TestResolveLLMProviderDefaultsToClaude(t *testing.T) {
+func TestResolveLLMProviderDefaultsToOllama(t *testing.T) {
+	// Install-wide default is the local ollama runtime so fresh installs
+	// boot without an API key. Cloud providers remain available via flag
+	// or env override — see ResolveLLMProvider doc comment.
 	withTempConfig(t, func(_ string) {
-		if got := ResolveLLMProvider(""); got != "claude-code" {
-			t.Fatalf("expected claude-code default, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected ollama default, got %q", got)
 		}
 	})
 }
@@ -433,8 +436,8 @@ func TestResolveLLMProviderUsesEnvOverride(t *testing.T) {
 func TestResolveLLMProviderNormalizesUnsupportedConfig(t *testing.T) {
 	withTempConfig(t, func(_ string) {
 		_ = Save(Config{LLMProvider: "gemini"})
-		if got := ResolveLLMProvider(""); got != "claude-code" {
-			t.Fatalf("expected unsupported provider to normalize to claude-code, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected unsupported provider to normalize to ollama default, got %q", got)
 		}
 	})
 }
