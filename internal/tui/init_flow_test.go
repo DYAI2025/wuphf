@@ -97,39 +97,25 @@ func TestInitFlowMentionsManagedIntegrations(t *testing.T) {
 	}
 }
 
-func TestProviderOptionsIncludeCodex(t *testing.T) {
-	options := ProviderOptions()
-	for _, opt := range options {
-		if opt.Value == "codex" {
-			return
-		}
-	}
-	t.Fatal("expected codex provider option")
-}
-
-func TestProviderOptionsIncludeOpencode(t *testing.T) {
-	options := ProviderOptions()
-	for _, opt := range options {
-		if opt.Value == "opencode" {
-			return
-		}
-	}
-	t.Fatal("expected opencode provider option")
-}
-
-func TestProviderOptionsExcludeUnsupportedProviders(t *testing.T) {
+// TestProviderOptionsLocalOnly pins the local-only contract for the
+// init/setup wizard provider picker: only local-inference kinds appear,
+// hosted-LLM kinds (claude-code, codex, opencode) are absent so the
+// user can't pick a tile that the broker would later reject.
+func TestProviderOptionsLocalOnly(t *testing.T) {
 	options := ProviderOptions()
 	values := make([]string, 0, len(options))
 	for _, opt := range options {
 		values = append(values, opt.Value)
 	}
 	joined := strings.Join(values, ",")
-	// Unsupported providers must not appear. Framed as a negative invariant
-	// (rather than an exact allowlist) so adding new supported providers —
-	// opencode, openclaw, etc. — doesn't require editing this test.
-	for _, banned := range []string{"gemini", "nex-ask"} {
+	for _, want := range []string{"ollama", "mlx-lm", "exo"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected local provider %q in picker, got %q", want, joined)
+		}
+	}
+	for _, banned := range []string{"claude-code", "codex", "opencode", "gemini", "nex-ask"} {
 		if strings.Contains(joined, banned) {
-			t.Fatalf("expected provider options to hide %q, got %q", banned, joined)
+			t.Errorf("expected provider options to hide %q (local-only), got %q", banned, joined)
 		}
 	}
 }

@@ -283,7 +283,11 @@ func TestOperationBlueprintMatrixNewLauncherAcceptsAllBlueprints(t *testing.T) {
 			// tests that read company.json via NewBroker.
 			t.Setenv("WUPHF_RUNTIME_HOME", home)
 			t.Setenv("WUPHF_BROKER_TOKEN", "")
-			if err := config.Save(config.Config{LLMProvider: "codex"}); err != nil {
+			// Local-only build: the test originally used codex to exercise
+			// a headless launcher path. ollama provides the same headless
+			// shape and is now the install-wide default, so it covers the
+			// "every blueprint loads with a local provider" assertion.
+			if err := config.Save(config.Config{LLMProvider: "ollama"}); err != nil {
 				t.Fatalf("save config: %v", err)
 			}
 
@@ -297,8 +301,8 @@ func TestOperationBlueprintMatrixNewLauncherAcceptsAllBlueprints(t *testing.T) {
 			if l.pack != nil {
 				t.Fatalf("expected no static pack for operation blueprint launch, got %+v", l.pack)
 			}
-			if l.provider != "codex" {
-				t.Fatalf("expected codex provider, got %q", l.provider)
+			if l.provider != "ollama" {
+				t.Fatalf("expected ollama provider, got %q", l.provider)
 			}
 		})
 	}

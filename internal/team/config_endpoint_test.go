@@ -16,25 +16,25 @@ import (
 
 // TestConfigEndpointAndHealth is a smoke test for ISSUE-004: the wizard's
 // POST /config must persist llm_provider and /health must reflect it.
+//
+// Local-only contract: the wizard can switch between local kinds (ollama,
+// mlx-lm, exo). Hosted-LLM kinds (claude-code, codex, opencode) are
+// refused at the persist boundary and return 400.
 func TestConfigEndpointAndHealth(t *testing.T) {
-	// Redirect config file to a temp HOME so we don't clobber user state.
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
-	// Pair HOME with WUPHF_RUNTIME_HOME so config.RuntimeHomeDir resolves
-	// to this test's tmpdir instead of the process-level leaked home
-	// from worktree_guard_test's init.
 	t.Setenv("WUPHF_RUNTIME_HOME", tmp)
 	if err := os.MkdirAll(filepath.Join(tmp, ".wuphf"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Seed config with claude-code, then POST codex.
-	initial := `{"llm_provider":"claude-code"}`
+	// Seed config with ollama (the install-wide local default).
+	initial := `{"llm_provider":"ollama"}`
 	if err := os.WriteFile(filepath.Join(tmp, ".wuphf", "config.json"), []byte(initial), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	b := newTestBroker(t)
-	b.runtimeProvider = "claude-code"
+	b.runtimeProvider = "ollama"
 	b.token = "test-token"
 	if err := b.StartOnPort(0); err != nil {
 		t.Fatalf("start broker: %v", err)
@@ -45,7 +45,7 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 		}
 	}()
 
-	// /health before — should be claude-code (the launcher-seeded default)
+	// /health before — should be ollama (the launcher-seeded default)
 	healthURL := "http://" + b.addr + "/health"
 	resp, err := http.Get(healthURL)
 	if err != nil {
@@ -56,15 +56,16 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 	resp.Body.Close()
 	_ = json.Unmarshal(raw1, &h1)
 	t.Logf("GET /health (initial) -> %s", string(raw1))
-	if p, _ := h1["provider"].(string); p != "claude-code" {
-		t.Fatalf("expected provider=claude-code before POST, got %q", p)
+	if p, _ := h1["provider"].(string); p != "ollama" {
+		t.Fatalf("expected provider=ollama before POST, got %q", p)
 	}
 	if backend, _ := h1["memory_backend"].(string); backend != config.MemoryBackendMarkdown {
 		t.Fatalf("expected memory_backend=%q before POST, got %q", config.MemoryBackendMarkdown, backend)
 	}
 
-	// POST /config with codex — simulates the wizard tile click
-	body := bytes.NewBufferString(`{"llm_provider":"codex"}`)
+	// POST /config with mlx-lm — simulates the wizard switching to
+	// another local kind. Must succeed and persist.
+	body := bytes.NewBufferString(`{"llm_provider":"mlx-lm"}`)
 	req, _ := http.NewRequest(http.MethodPost, "http://"+b.addr+"/config", body)
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
@@ -74,12 +75,12 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	t.Logf("POST /config {llm_provider:codex} -> %d %s", resp.StatusCode, string(raw))
+	t.Logf("POST /config {llm_provider:mlx-lm} -> %d %s", resp.StatusCode, string(raw))
 	if resp.StatusCode != 200 {
 		t.Fatalf("POST /config status=%d body=%s", resp.StatusCode, string(raw))
 	}
 
-	// /health after — should be codex
+	// /health after — should reflect the switch
 	resp, err = http.Get(healthURL)
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
@@ -89,8 +90,8 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 	resp.Body.Close()
 	_ = json.Unmarshal(raw2, &h2)
 	t.Logf("GET /health (after POST) -> %s", string(raw2))
-	if p, _ := h2["provider"].(string); p != "codex" {
-		t.Fatalf("expected provider=codex after POST, got %q", p)
+	if p, _ := h2["provider"].(string); p != "mlx-lm" {
+		t.Fatalf("expected provider=mlx-lm after POST, got %q", p)
 	}
 
 	req, _ = http.NewRequest(http.MethodGet, "http://"+b.addr+"/config", nil)
@@ -103,8 +104,8 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 	resp.Body.Close()
 	var cfgResp map[string]any
 	_ = json.Unmarshal(rawConfig, &cfgResp)
-	if p, _ := cfgResp["llm_provider"].(string); p != "codex" {
-		t.Fatalf("expected /config llm_provider=codex after POST, got %q (body=%s)", p, string(rawConfig))
+	if p, _ := cfgResp["llm_provider"].(string); p != "mlx-lm" {
+		t.Fatalf("expected /config llm_provider=mlx-lm after POST, got %q (body=%s)", p, string(rawConfig))
 	}
 	if backend, _ := cfgResp["memory_backend"].(string); backend != config.MemoryBackendMarkdown {
 		t.Fatalf("expected /config memory_backend=%q, got %q", config.MemoryBackendMarkdown, backend)
@@ -112,45 +113,31 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 
 	// Verify persisted to disk
 	disk, _ := os.ReadFile(filepath.Join(tmp, ".wuphf", "config.json"))
-	if !strings.Contains(string(disk), `"llm_provider": "codex"`) {
-		t.Fatalf("config.json missing codex: %s", string(disk))
+	if !strings.Contains(string(disk), `"llm_provider": "mlx-lm"`) {
+		t.Fatalf("config.json missing mlx-lm: %s", string(disk))
 	}
 
-	// POST /config with opencode — same flow as codex above, regression test
-	// for the broker allowlist missing "opencode" (the web UI would silently
-	// drop the switch because SettingsApp/ProviderSwitcher/Wizard all POST
-	// llm_provider=opencode).
-	body = bytes.NewBufferString(`{"llm_provider":"opencode"}`)
-	req, _ = http.NewRequest(http.MethodPost, "http://"+b.addr+"/config", body)
-	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /config {opencode}: %v", err)
-	}
-	raw, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("POST /config {llm_provider:opencode} status=%d body=%s", resp.StatusCode, string(raw))
-	}
-
-	// The `llm_provider_priority` allowlist had the same bug as `llm_provider`
-	// (broker.go:5617) — regression test so both switches stay in sync.
-	body = bytes.NewBufferString(`{"llm_provider_priority":["opencode","claude-code"]}`)
-	req, _ = http.NewRequest(http.MethodPost, "http://"+b.addr+"/config", body)
-	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST /config priority: %v", err)
-	}
-	rawPriority, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("POST /config {llm_provider_priority:[opencode,...]} status=%d body=%s", resp.StatusCode, string(rawPriority))
+	// Cloud kinds (claude-code, codex, opencode) must be rejected with
+	// 400 — the wizard tile UI is the user-facing surface for the
+	// local-only contract, so a saved cloud kind would mean the build
+	// fell through to a hosted LLM.
+	for _, blocked := range []string{"claude-code", "codex", "opencode"} {
+		body = bytes.NewBufferString(`{"llm_provider":"` + blocked + `"}`)
+		req, _ = http.NewRequest(http.MethodPost, "http://"+b.addr+"/config", body)
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /config {%s}: %v", blocked, err)
+		}
+		raw, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("POST /config {llm_provider:%s} expected 400, got %d body=%s", blocked, resp.StatusCode, string(raw))
+		}
 	}
 
-	// Reject unsupported provider
+	// Reject unsupported provider (anthropic was never a runnable Kind).
 	body = bytes.NewBufferString(`{"llm_provider":"anthropic"}`)
 	req, _ = http.NewRequest(http.MethodPost, "http://"+b.addr+"/config", body)
 	req.Header.Set("Authorization", "Bearer test-token")
@@ -163,7 +150,6 @@ func TestConfigEndpointAndHealth(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unsupported provider, got %d", resp.StatusCode)
 	}
-
 }
 
 // TestConfigEndpointAcceptsActionProviders verifies the web UI POST /config

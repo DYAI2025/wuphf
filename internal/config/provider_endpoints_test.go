@@ -212,6 +212,82 @@ func TestResolveProviderModelForAgent_SlugCaseNormalized(t *testing.T) {
 	})
 }
 
+// TestResolveLLMProvider_LocalOnlyRejectsCloudFlag pins the local-only
+// contract for CLI input: --provider claude-code|codex|opencode is treated
+// as if no flag was set, and the install-wide default (ollama) wins.
+func TestResolveLLMProvider_LocalOnlyRejectsCloudFlag(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		for _, blocked := range []string{"claude-code", "codex", "opencode"} {
+			if got := ResolveLLMProvider(blocked); got != "ollama" {
+				t.Errorf("flag %q: got %q, want ollama (cloud must be rejected)", blocked, got)
+			}
+		}
+	})
+}
+
+// TestResolveLLMProvider_LocalOnlyRejectsCloudEnv pins the same contract
+// for WUPHF_LLM_PROVIDER.
+func TestResolveLLMProvider_LocalOnlyRejectsCloudEnv(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		t.Setenv("WUPHF_LLM_PROVIDER", "claude-code")
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Errorf("env WUPHF_LLM_PROVIDER=claude-code: got %q, want ollama", got)
+		}
+	})
+}
+
+// TestLoad_MigratesLegacyCloudProvider ensures an existing config that
+// stored `llm_provider: "claude-code"` is sanitized on load, so an
+// upgraded user doesn't keep silently dispatching through a hosted LLM.
+func TestLoad_MigratesLegacyCloudProvider(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		if err := Save(Config{LLMProvider: "claude-code"}); err != nil {
+			t.Fatalf("save legacy config: %v", err)
+		}
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if got.LLMProvider != "" {
+			t.Errorf("legacy cloud LLMProvider not migrated: got %q", got.LLMProvider)
+		}
+	})
+}
+
+// TestLoad_StripsCloudKindsFromPriorityList ensures the priority list is
+// filtered too — leaving a cloud kind in there would mean a fallback path
+// still reaches a hosted LLM after the primary fails.
+func TestLoad_StripsCloudKindsFromPriorityList(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		if err := Save(Config{
+			LLMProviderPriority: []string{"ollama", "claude-code", "codex"},
+		}); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if len(got.LLMProviderPriority) != 1 || got.LLMProviderPriority[0] != "ollama" {
+			t.Errorf("priority list not filtered: got %v, want [ollama]", got.LLMProviderPriority)
+		}
+	})
+}
+
+// TestIsLLMProviderKindAllowed_BlocksCloud is the contract the web UI
+// settings endpoint relies on: a POST that names a cloud Kind must be
+// refused at the persist boundary.
+func TestIsLLMProviderKindAllowed_BlocksCloud(t *testing.T) {
+	for _, blocked := range []string{"claude-code", "codex", "opencode"} {
+		if IsLLMProviderKindAllowed(blocked) {
+			t.Errorf("IsLLMProviderKindAllowed(%q) = true, want false (local-only)", blocked)
+		}
+	}
+	if !IsLLMProviderKindAllowed("ollama") {
+		t.Error("IsLLMProviderKindAllowed(ollama) = false, want true")
+	}
+}
+
 func writeTestConfig(t *testing.T, dir string, cfg Config) {
 	t.Helper()
 	path := filepath.Join(dir, ".wuphf", "config.json")

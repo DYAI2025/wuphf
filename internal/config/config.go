@@ -208,6 +208,25 @@ func load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
+	// Migrate legacy cloud-provider selections in-memory so an existing
+	// ~/.wuphf/config.json carrying `llm_provider: "claude-code"` (or a
+	// priority list with cloud kinds) doesn't keep dispatching through a
+	// hosted LLM after a local-only upgrade. The on-disk file is left
+	// untouched until the user saves; Save() then strips the bad values.
+	if localOnlyMode() {
+		if isBlockedCloudProvider(cfg.LLMProvider) {
+			cfg.LLMProvider = ""
+		}
+		if len(cfg.LLMProviderPriority) > 0 {
+			filtered := cfg.LLMProviderPriority[:0]
+			for _, kind := range cfg.LLMProviderPriority {
+				if !isBlockedCloudProvider(kind) {
+					filtered = append(filtered, kind)
+				}
+			}
+			cfg.LLMProviderPriority = filtered
+		}
+	}
 	return cfg, nil
 }
 
@@ -318,22 +337,51 @@ func ResolveLLMProvider(flagValue string) string {
 }
 
 // allowedLLMProviderKinds is the set of values normalizeLLMProvider accepts
-// for --provider, WUPHF_LLM_PROVIDER, and the config file. claude-code,
-// codex, opencode, and ollama are baked in for backward compatibility and
-// standalone config tests (which don't import the provider package). ollama
-// in particular is the install-wide default (see ResolveLLMProvider) so it
-// must be acceptable even when the provider package's init() hasn't run.
-// Additional kinds are registered at init() time by their provider
+// for --provider, WUPHF_LLM_PROVIDER, and the config file. ollama is the
+// install-wide default (see ResolveLLMProvider) so it must be acceptable
+// even when the provider package's init() hasn't run yet.
+//
+// Cloud-backed provider kinds (claude-code, codex, opencode) intentionally
+// stay out of this set: wuphf runs local-only by default, see localOnlyMode
+// and blockedCloudProviderKinds. Their internal/provider package init()s
+// still call Register → AllowLLMProviderKind to keep the dispatch table
+// consistent, but normalizeLLMProvider re-rejects them in local-only mode
+// so they never surface through --provider, env, or config.
+//
+// Additional local kinds are registered at init() time by their provider
 // implementation via AllowLLMProviderKind — see internal/provider/registry.go.
 var (
 	allowedLLMProviderKindsMu sync.RWMutex
 	allowedLLMProviderKinds   = map[string]struct{}{
-		"claude-code": {},
-		"codex":       {},
-		"opencode":    {},
-		"ollama":      {},
+		"ollama": {},
 	}
 )
+
+// blockedCloudProviderKinds is the closed list of provider Kinds that reach
+// a hosted-LLM API. Listed here so a normalizeLLMProvider rejection can give
+// a meaningful error and so the migration path (Load) knows what to coerce.
+//
+// `hermes-agent` and `openclaw-http` are NOT on this list because they are
+// local gateway bridges — what's behind the bridge is the operator's choice,
+// not a baked-in cloud commitment.
+var blockedCloudProviderKinds = map[string]struct{}{
+	"claude-code": {},
+	"codex":       {},
+	"opencode":    {},
+}
+
+// localOnlyMode is the install-wide enforcement of "no hosted-LLM provider
+// may be selected". Currently always on. We funnel through a function (not
+// a bare constant) so a future opt-out gate (e.g. WUPHF_ALLOW_CLOUD=1) can
+// be added in one place without touching every call site.
+func localOnlyMode() bool { return true }
+
+// isBlockedCloudProvider reports whether kind is a known hosted-LLM
+// provider Kind that this build refuses to dispatch.
+func isBlockedCloudProvider(kind string) bool {
+	_, ok := blockedCloudProviderKinds[strings.TrimSpace(strings.ToLower(kind))]
+	return ok
+}
 
 // AllowLLMProviderKind registers name as an acceptable provider value.
 // Provider implementations call this from init() so that
@@ -352,6 +400,14 @@ func AllowLLMProviderKind(name string) {
 func normalizeLLMProvider(value string) string {
 	name := strings.TrimSpace(strings.ToLower(value))
 	if name == "" {
+		return ""
+	}
+	// Reject hosted-LLM kinds up front so a --provider/env/config value
+	// that names a cloud provider falls through to the local-only default
+	// instead of being silently honored. Their init() registers them in
+	// allowedLLMProviderKinds so the dispatch table can find them by Kind;
+	// the user-facing selection path refuses them here.
+	if localOnlyMode() && isBlockedCloudProvider(name) {
 		return ""
 	}
 	allowedLLMProviderKindsMu.RLock()
@@ -373,6 +429,11 @@ func normalizeLLMProvider(value string) string {
 func IsLLMProviderKindAllowed(name string) bool {
 	name = strings.TrimSpace(strings.ToLower(name))
 	if name == "" {
+		return false
+	}
+	// Block hosted-LLM kinds at the persist boundary so the web UI's
+	// settings page can't silently save a value the runtime will reject.
+	if localOnlyMode() && isBlockedCloudProvider(name) {
 		return false
 	}
 	allowedLLMProviderKindsMu.RLock()

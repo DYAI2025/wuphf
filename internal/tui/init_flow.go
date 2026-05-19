@@ -409,23 +409,22 @@ func (f InitFlowModel) emitPhase(phase InitPhase) tea.Cmd {
 }
 
 // ProviderOptions returns the picker options for LLM provider selection.
+//
+// Local-only build: only local-inference kinds are offered. Hosted-LLM
+// kinds (claude-code, codex, opencode) are blocked at the config layer
+// (see internal/config.blockedCloudProviderKinds) so listing them here
+// would surface tiles the user can pick but the broker would 400.
 func ProviderOptions() []PickerOption {
-	claudeDesc := "Claude via claude CLI (recommended)"
-	if _, err := initFlowLookPathFn("claude"); err != nil {
-		claudeDesc = "Claude via claude CLI (not found in PATH!)"
+	ollamaDesc := "Ollama daemon (recommended) — Gemma 4, Qwen 2.5, Llama 3.1"
+	if _, err := initFlowLookPathFn("ollama"); err != nil {
+		ollamaDesc = "Ollama daemon — not found in PATH; install from https://ollama.com/download"
 	}
-	codexDesc := "Codex via codex CLI"
-	if _, err := initFlowLookPathFn("codex"); err != nil {
-		codexDesc = "Codex via codex CLI (not found in PATH!)"
-	}
-	opencodeDesc := "Opencode via opencode CLI (BYO provider: Claude, OpenAI, local/Ollama)"
-	if _, err := initFlowLookPathFn("opencode"); err != nil {
-		opencodeDesc = "Opencode via opencode CLI (not found in PATH!)"
-	}
+	mlxDesc := "Apple-silicon MLX server (mlx_lm.server)"
+	exoDesc := "Exo distributed inference cluster"
 	options := []PickerOption{
-		{Label: "Claude Code (default)", Value: "claude-code", Description: claudeDesc},
-		{Label: "Codex CLI", Value: "codex", Description: codexDesc},
-		{Label: "Opencode CLI", Value: "opencode", Description: opencodeDesc},
+		{Label: "Ollama (default)", Value: "ollama", Description: ollamaDesc},
+		{Label: "MLX-LM", Value: "mlx-lm", Description: mlxDesc},
+		{Label: "Exo", Value: "exo", Description: exoDesc},
 	}
 	return options
 }
