@@ -28,13 +28,14 @@ type processedTurn struct {
 	channel      string
 }
 
-func TestNewLauncherUsesCodexProviderFromConfig(t *testing.T) {
+// TestNewLauncherMigratesLegacyCodexConfig confirms a saved legacy
+// `llm_provider: "codex"` is migrated away by config.load() under the
+// local-only contract — the launcher reads ollama (default) instead of
+// inheriting the cloud kind. Prior to local-only mode this test asserted
+// codex was honored; that behavior is now forbidden by design.
+func TestNewLauncherMigratesLegacyCodexConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// Pair HOME with WUPHF_RUNTIME_HOME so resetManifestToPack writes into
-	// this test's tmpdir instead of the process-level leaked runtime home
-	// installed by worktree_guard_test's init — that leak pollutes
-	// downstream tests that read company.json via NewBroker.
 	t.Setenv("WUPHF_RUNTIME_HOME", home)
 	t.Setenv("WUPHF_BROKER_TOKEN", "")
 	if err := config.Save(config.Config{LLMProvider: "codex"}); err != nil {
@@ -45,11 +46,11 @@ func TestNewLauncherUsesCodexProviderFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLauncher: %v", err)
 	}
-	if l.provider != "codex" {
-		t.Fatalf("expected codex provider, got %q", l.provider)
+	if l.provider != "ollama" {
+		t.Fatalf("expected legacy codex to migrate to ollama, got %q", l.provider)
 	}
 	if l.UsesTmuxRuntime() {
-		t.Fatal("expected codex launcher to use headless runtime")
+		t.Fatal("expected headless runtime for ollama launcher")
 	}
 }
 

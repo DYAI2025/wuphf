@@ -117,6 +117,177 @@ func TestResolveProviderEndpoint_KindWithDashesMapsToEnvUnderscore(t *testing.T)
 	})
 }
 
+// TestResolveProviderModelForAgent_EmptySlug verifies the empty-slug guard:
+// callers without an agent context get "" and fall through to the install-
+// wide model rather than picking up a stray WUPHF_<KIND>_MODEL_ variable.
+func TestResolveProviderModelForAgent_EmptySlug(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		t.Setenv("WUPHF_OLLAMA_MODEL_", "should-not-leak")
+		got := ResolveProviderModelForAgent("ollama", "")
+		if got != "" {
+			t.Errorf("got %q, want empty (no slug context)", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_EnvOverridesConfig confirms the env layer
+// (WUPHF_OLLAMA_MODEL_FE) wins over the config-file ModelsByAgent map for the
+// same slug — matching ResolveProviderEndpoint's env>config>default order.
+func TestResolveProviderModelForAgent_EnvOverridesConfig(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{"fe": "configured-model"}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_FE", "env-model")
+
+		got := ResolveProviderModelForAgent("ollama", "fe")
+		if got != "env-model" {
+			t.Errorf("got %q, want env-model", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_ConfigUsedWhenEnvAbsent confirms the
+// config-file path: env unset → ModelsByAgent[slug] is returned.
+func TestResolveProviderModelForAgent_ConfigUsedWhenEnvAbsent(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{
+					"eng":      "qwen2.5-coder:14b",
+					"designer": "llama3.1:8b",
+				}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_ENG", "")
+		t.Setenv("WUPHF_OLLAMA_MODEL_DESIGNER", "")
+
+		if got := ResolveProviderModelForAgent("ollama", "eng"); got != "qwen2.5-coder:14b" {
+			t.Errorf("eng: got %q, want qwen2.5-coder:14b", got)
+		}
+		if got := ResolveProviderModelForAgent("ollama", "designer"); got != "llama3.1:8b" {
+			t.Errorf("designer: got %q, want llama3.1:8b", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_UnknownSlugReturnsEmpty confirms an agent
+// without an explicit binding falls through (caller uses install-wide model).
+func TestResolveProviderModelForAgent_UnknownSlugReturnsEmpty(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{"eng": "qwen2.5-coder:14b"}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_QA", "")
+
+		if got := ResolveProviderModelForAgent("ollama", "qa"); got != "" {
+			t.Errorf("qa (unbound): got %q, want empty", got)
+		}
+	})
+}
+
+// TestResolveProviderModelForAgent_SlugCaseNormalized confirms slug lookup is
+// case-insensitive on the env-var name and on the config map key — config
+// writers using "FE" or "Fe" should still hit the "fe" map entry.
+func TestResolveProviderModelForAgent_SlugCaseNormalized(t *testing.T) {
+	withTempConfig(t, func(dir string) {
+		cfg := Config{
+			ProviderEndpoints: map[string]ProviderEndpoint{
+				"ollama": {ModelsByAgent: map[string]string{"fe": "qwen2.5-coder:7b"}},
+			},
+		}
+		writeTestConfig(t, dir, cfg)
+		t.Setenv("WUPHF_OLLAMA_MODEL_FE", "")
+
+		if got := ResolveProviderModelForAgent("ollama", "FE"); got != "qwen2.5-coder:7b" {
+			t.Errorf("uppercase slug: got %q, want match against lowercase config key", got)
+		}
+	})
+}
+
+// TestResolveLLMProvider_LocalOnlyRejectsCloudFlag pins the local-only
+// contract for CLI input: --provider claude-code|codex|opencode is treated
+// as if no flag was set, and the install-wide default (ollama) wins.
+func TestResolveLLMProvider_LocalOnlyRejectsCloudFlag(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		for _, blocked := range []string{"claude-code", "codex", "opencode"} {
+			if got := ResolveLLMProvider(blocked); got != "ollama" {
+				t.Errorf("flag %q: got %q, want ollama (cloud must be rejected)", blocked, got)
+			}
+		}
+	})
+}
+
+// TestResolveLLMProvider_LocalOnlyRejectsCloudEnv pins the same contract
+// for WUPHF_LLM_PROVIDER.
+func TestResolveLLMProvider_LocalOnlyRejectsCloudEnv(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		t.Setenv("WUPHF_LLM_PROVIDER", "claude-code")
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Errorf("env WUPHF_LLM_PROVIDER=claude-code: got %q, want ollama", got)
+		}
+	})
+}
+
+// TestLoad_MigratesLegacyCloudProvider ensures an existing config that
+// stored `llm_provider: "claude-code"` is sanitized on load, so an
+// upgraded user doesn't keep silently dispatching through a hosted LLM.
+func TestLoad_MigratesLegacyCloudProvider(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		if err := Save(Config{LLMProvider: "claude-code"}); err != nil {
+			t.Fatalf("save legacy config: %v", err)
+		}
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if got.LLMProvider != "" {
+			t.Errorf("legacy cloud LLMProvider not migrated: got %q", got.LLMProvider)
+		}
+	})
+}
+
+// TestLoad_StripsCloudKindsFromPriorityList ensures the priority list is
+// filtered too — leaving a cloud kind in there would mean a fallback path
+// still reaches a hosted LLM after the primary fails.
+func TestLoad_StripsCloudKindsFromPriorityList(t *testing.T) {
+	withTempConfig(t, func(_ string) {
+		if err := Save(Config{
+			LLMProviderPriority: []string{"ollama", "claude-code", "codex"},
+		}); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		got, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if len(got.LLMProviderPriority) != 1 || got.LLMProviderPriority[0] != "ollama" {
+			t.Errorf("priority list not filtered: got %v, want [ollama]", got.LLMProviderPriority)
+		}
+	})
+}
+
+// TestIsLLMProviderKindAllowed_BlocksCloud is the contract the web UI
+// settings endpoint relies on: a POST that names a cloud Kind must be
+// refused at the persist boundary.
+func TestIsLLMProviderKindAllowed_BlocksCloud(t *testing.T) {
+	for _, blocked := range []string{"claude-code", "codex", "opencode"} {
+		if IsLLMProviderKindAllowed(blocked) {
+			t.Errorf("IsLLMProviderKindAllowed(%q) = true, want false (local-only)", blocked)
+		}
+	}
+	if !IsLLMProviderKindAllowed("ollama") {
+		t.Error("IsLLMProviderKindAllowed(ollama) = false, want true")
+	}
+}
+
 func writeTestConfig(t *testing.T, dir string, cfg Config) {
 	t.Helper()
 	path := filepath.Join(dir, ".wuphf", "config.json")

@@ -92,9 +92,15 @@ type Config struct {
 }
 
 // ProviderEndpoint configures one OpenAI-compatible HTTP backend.
+//
+// ModelsByAgent pins a per-agent-slug model name that wins over Model on a
+// per-turn basis. This is how a local-first setup runs Qwen-coder for the
+// engineer and Llama for the designer through one ollama daemon without
+// forcing separate provider Kinds — see ResolveProviderModelForAgent.
 type ProviderEndpoint struct {
-	BaseURL string `json:"base_url,omitempty"`
-	Model   string `json:"model,omitempty"`
+	BaseURL       string            `json:"base_url,omitempty"`
+	Model         string            `json:"model,omitempty"`
+	ModelsByAgent map[string]string `json:"models_by_agent,omitempty"`
 }
 
 // ImageEndpoint is per-image-gen-provider runtime config (api key, base URL,
@@ -202,6 +208,25 @@ func load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
+	// Migrate legacy cloud-provider selections in-memory so an existing
+	// ~/.wuphf/config.json carrying `llm_provider: "claude-code"` (or a
+	// priority list with cloud kinds) doesn't keep dispatching through a
+	// hosted LLM after a local-only upgrade. The on-disk file is left
+	// untouched until the user saves; Save() then strips the bad values.
+	if localOnlyMode() {
+		if isBlockedCloudProvider(cfg.LLMProvider) {
+			cfg.LLMProvider = ""
+		}
+		if len(cfg.LLMProviderPriority) > 0 {
+			filtered := cfg.LLMProviderPriority[:0]
+			for _, kind := range cfg.LLMProviderPriority {
+				if !isBlockedCloudProvider(kind) {
+					filtered = append(filtered, kind)
+				}
+			}
+			cfg.LLMProviderPriority = filtered
+		}
+	}
 	return cfg, nil
 }
 
@@ -289,8 +314,14 @@ func MemoryBackendLabel(backend string) string {
 }
 
 // ResolveLLMProvider resolves the active LLM provider for this run.
-// Resolution: flag/env override > config file > default claude-code.
+// Resolution: flag/env override > config file > default ollama.
 // Only supported interactive providers are returned.
+//
+// The default landed on `ollama` (not claude-code) to make wuphf local-first
+// out of the box: a single `ollama serve` daemon with Gemma 4, Qwen 2.5, and
+// Llama 3.1 powers the whole agent team with no API keys, no egress, no
+// per-token cost. Cloud providers (claude-code, codex, opencode) remain
+// registered and selectable via --provider for users who want them.
 func ResolveLLMProvider(flagValue string) string {
 	if v := normalizeLLMProvider(flagValue); v != "" {
 		return v
@@ -302,23 +333,55 @@ func ResolveLLMProvider(flagValue string) string {
 	if v := normalizeLLMProvider(cfg.LLMProvider); v != "" {
 		return v
 	}
-	return "claude-code"
+	return "ollama"
 }
 
 // allowedLLMProviderKinds is the set of values normalizeLLMProvider accepts
-// for --provider, WUPHF_LLM_PROVIDER, and the config file. claude-code and
-// codex are baked in for backward compatibility and standalone config tests
-// (which don't import the provider package). Additional kinds are registered
-// at init() time by their provider implementation via AllowLLMProviderKind —
-// see internal/provider/registry.go.
+// for --provider, WUPHF_LLM_PROVIDER, and the config file. ollama is the
+// install-wide default (see ResolveLLMProvider) so it must be acceptable
+// even when the provider package's init() hasn't run yet.
+//
+// Cloud-backed provider kinds (claude-code, codex, opencode) intentionally
+// stay out of this set: wuphf runs local-only by default, see localOnlyMode
+// and blockedCloudProviderKinds. Their internal/provider package init()s
+// still call Register → AllowLLMProviderKind to keep the dispatch table
+// consistent, but normalizeLLMProvider re-rejects them in local-only mode
+// so they never surface through --provider, env, or config.
+//
+// Additional local kinds are registered at init() time by their provider
+// implementation via AllowLLMProviderKind — see internal/provider/registry.go.
 var (
 	allowedLLMProviderKindsMu sync.RWMutex
 	allowedLLMProviderKinds   = map[string]struct{}{
-		"claude-code": {},
-		"codex":       {},
-		"opencode":    {},
+		"ollama": {},
 	}
 )
+
+// blockedCloudProviderKinds is the closed list of provider Kinds that reach
+// a hosted-LLM API. Listed here so a normalizeLLMProvider rejection can give
+// a meaningful error and so the migration path (Load) knows what to coerce.
+//
+// `hermes-agent` and `openclaw-http` are NOT on this list because they are
+// local gateway bridges — what's behind the bridge is the operator's choice,
+// not a baked-in cloud commitment.
+var blockedCloudProviderKinds = map[string]struct{}{
+	"claude-code": {},
+	"codex":       {},
+	"opencode":    {},
+}
+
+// localOnlyMode is the install-wide enforcement of "no hosted-LLM provider
+// may be selected". Currently always on. We funnel through a function (not
+// a bare constant) so a future opt-out gate (e.g. WUPHF_ALLOW_CLOUD=1) can
+// be added in one place without touching every call site.
+func localOnlyMode() bool { return true }
+
+// isBlockedCloudProvider reports whether kind is a known hosted-LLM
+// provider Kind that this build refuses to dispatch.
+func isBlockedCloudProvider(kind string) bool {
+	_, ok := blockedCloudProviderKinds[strings.TrimSpace(strings.ToLower(kind))]
+	return ok
+}
 
 // AllowLLMProviderKind registers name as an acceptable provider value.
 // Provider implementations call this from init() so that
@@ -337,6 +400,14 @@ func AllowLLMProviderKind(name string) {
 func normalizeLLMProvider(value string) string {
 	name := strings.TrimSpace(strings.ToLower(value))
 	if name == "" {
+		return ""
+	}
+	// Reject hosted-LLM kinds up front so a --provider/env/config value
+	// that names a cloud provider falls through to the local-only default
+	// instead of being silently honored. Their init() registers them in
+	// allowedLLMProviderKinds so the dispatch table can find them by Kind;
+	// the user-facing selection path refuses them here.
+	if localOnlyMode() && isBlockedCloudProvider(name) {
 		return ""
 	}
 	allowedLLMProviderKindsMu.RLock()
@@ -358,6 +429,11 @@ func normalizeLLMProvider(value string) string {
 func IsLLMProviderKindAllowed(name string) bool {
 	name = strings.TrimSpace(strings.ToLower(name))
 	if name == "" {
+		return false
+	}
+	// Block hosted-LLM kinds at the persist boundary so the web UI's
+	// settings page can't silently save a value the runtime will reject.
+	if localOnlyMode() && isBlockedCloudProvider(name) {
 		return false
 	}
 	allowedLLMProviderKindsMu.RLock()
@@ -861,6 +937,40 @@ func ResolveOpenclawGatewayURL() string {
 	return "ws://127.0.0.1:18789"
 }
 
+// ResolveProviderModelForAgent returns the per-agent model override for a
+// provider Kind, or "" when no override is configured. Resolution order:
+//
+//  1. Per-agent env: WUPHF_<KIND>_MODEL_<SLUG>
+//     (slug uppercased, '-' → '_'; e.g. WUPHF_OLLAMA_MODEL_FE → "qwen2.5-coder:14b").
+//  2. Config.ProviderEndpoints[kind].ModelsByAgent[slug].
+//
+// Returning "" lets the caller fall back to the install-wide model from
+// ResolveProviderEndpoint — there is no compile-time per-agent default.
+//
+// agentSlug is normalized to lower-case before lookup so config files written
+// in either case work. Empty slug returns "" without checking env to avoid
+// leaking the install-wide WUPHF_<KIND>_MODEL_ var into agent-less callers.
+func ResolveProviderModelForAgent(kind, agentSlug string) string {
+	slug := strings.TrimSpace(strings.ToLower(agentSlug))
+	if slug == "" {
+		return ""
+	}
+	envKind := strings.ToUpper(strings.ReplaceAll(kind, "-", "_"))
+	envSlug := strings.ToUpper(strings.ReplaceAll(slug, "-", "_"))
+	if v := strings.TrimSpace(os.Getenv("WUPHF_" + envKind + "_MODEL_" + envSlug)); v != "" {
+		return v
+	}
+	cfg, _ := Load()
+	if ep, ok := cfg.ProviderEndpoints[kind]; ok {
+		if v, ok := ep.ModelsByAgent[slug]; ok {
+			if v := strings.TrimSpace(v); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
 // ResolveProviderEndpoint resolves the base URL and model for an OpenAI-
 // compatible local provider Kind (mlx-lm, ollama, exo). Resolution order:
 //
@@ -871,6 +981,10 @@ func ResolveOpenclawGatewayURL() string {
 //
 // Returned values are always non-empty when defaults are non-empty; this
 // helper never returns "" for a registered Kind.
+//
+// For per-agent model overrides on a shared local daemon (e.g. ollama serving
+// Qwen for the engineer and Llama for the designer through one process), use
+// ResolveProviderModelForAgent in addition.
 func ResolveProviderEndpoint(kind, defaultBaseURL, defaultModel string) (string, string) {
 	envKind := strings.ToUpper(strings.ReplaceAll(kind, "-", "_"))
 	baseURL := strings.TrimSpace(os.Getenv("WUPHF_" + envKind + "_BASE_URL"))

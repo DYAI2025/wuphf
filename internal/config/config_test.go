@@ -260,6 +260,12 @@ func TestResolveGeminiAPIKeyFallbackEnv(t *testing.T) {
 
 func TestResolveGeminiAPIKeyConfig(t *testing.T) {
 	withTempConfig(t, func(_ string) {
+		// Isolate from the developer's real environment: ResolveGeminiAPIKey
+		// checks WUPHF_GEMINI_API_KEY and GEMINI_API_KEY before falling back
+		// to the config file, so a host-level GEMINI_API_KEY would shadow
+		// the config value this test is asserting.
+		t.Setenv("WUPHF_GEMINI_API_KEY", "")
+		t.Setenv("GEMINI_API_KEY", "")
 		_ = Save(Config{GeminiAPIKey: "cfg-gemini"})
 		if got := ResolveGeminiAPIKey(); got != "cfg-gemini" {
 			t.Fatalf("expected config fallback, got %q", got)
@@ -413,19 +419,27 @@ func TestResolveActionProviderUsesConfig(t *testing.T) {
 	})
 }
 
-func TestResolveLLMProviderDefaultsToClaude(t *testing.T) {
+func TestResolveLLMProviderDefaultsToOllama(t *testing.T) {
+	// Install-wide default is the local ollama runtime so fresh installs
+	// boot without an API key. Cloud providers remain available via flag
+	// or env override — see ResolveLLMProvider doc comment.
 	withTempConfig(t, func(_ string) {
-		if got := ResolveLLMProvider(""); got != "claude-code" {
-			t.Fatalf("expected claude-code default, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected ollama default, got %q", got)
 		}
 	})
 }
 
 func TestResolveLLMProviderUsesEnvOverride(t *testing.T) {
+	// Local-only build: env requests for cloud kinds (codex) fall back to
+	// the install-wide ollama default. The env-override path itself is
+	// covered by TestResolveLLMProvider_LocalOnlyRejectsCloudEnv and (for
+	// the accept path on a local kind) any future local kind added to
+	// allowedLLMProviderKinds.
 	withTempConfig(t, func(_ string) {
 		t.Setenv("WUPHF_LLM_PROVIDER", "codex")
-		if got := ResolveLLMProvider(""); got != "codex" {
-			t.Fatalf("expected codex env override, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected cloud env to fall through to ollama default, got %q", got)
 		}
 	})
 }
@@ -433,26 +447,32 @@ func TestResolveLLMProviderUsesEnvOverride(t *testing.T) {
 func TestResolveLLMProviderNormalizesUnsupportedConfig(t *testing.T) {
 	withTempConfig(t, func(_ string) {
 		_ = Save(Config{LLMProvider: "gemini"})
-		if got := ResolveLLMProvider(""); got != "claude-code" {
-			t.Fatalf("expected unsupported provider to normalize to claude-code, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected unsupported provider to normalize to ollama default, got %q", got)
 		}
 	})
 }
 
-func TestResolveLLMProviderAcceptsOpencode(t *testing.T) {
+func TestResolveLLMProviderRejectsOpencodeEnv(t *testing.T) {
+	// Local-only contract: opencode is on the blocked-cloud list because
+	// it dispatches through a hosted LLM. The env-set must be ignored and
+	// the default (ollama) must win — see blockedCloudProviderKinds.
 	withTempConfig(t, func(_ string) {
 		t.Setenv("WUPHF_LLM_PROVIDER", "opencode")
-		if got := ResolveLLMProvider(""); got != "opencode" {
-			t.Fatalf("expected opencode env override, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected opencode env to be rejected, got %q", got)
 		}
 	})
 }
 
-func TestResolveLLMProviderOpencodeFromConfig(t *testing.T) {
+func TestResolveLLMProviderRejectsOpencodeFromConfig(t *testing.T) {
+	// Same as the env path: a legacy config that still says opencode is
+	// migrated away by load() so ResolveLLMProvider sees an empty value
+	// and falls through to ollama.
 	withTempConfig(t, func(_ string) {
 		_ = Save(Config{LLMProvider: "opencode"})
-		if got := ResolveLLMProvider(""); got != "opencode" {
-			t.Fatalf("expected opencode from config, got %q", got)
+		if got := ResolveLLMProvider(""); got != "ollama" {
+			t.Fatalf("expected legacy opencode config to migrate to ollama, got %q", got)
 		}
 	})
 }

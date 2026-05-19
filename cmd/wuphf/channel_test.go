@@ -424,14 +424,27 @@ func TestProviderCommandOpensProviderPicker(t *testing.T) {
 		t.Fatalf("expected provider picker, got active=%v mode=%q", got.picker.IsActive(), got.pickerMode)
 	}
 	view := stripANSI(got.picker.View())
-	if !strings.Contains(view, "Codex CLI") || !strings.Contains(view, "Claude Code") {
-		t.Fatalf("expected provider options in picker, got %q", view)
+	// Local-only build: the picker offers ollama and the other local
+	// kinds. Cloud-provider tiles (Codex CLI, Claude Code, Opencode) are
+	// removed at the source — see internal/tui.ProviderOptions.
+	if !strings.Contains(view, "Ollama") {
+		t.Fatalf("expected Ollama option in picker, got %q", view)
+	}
+	for _, banned := range []string{"Codex CLI", "Claude Code", "Opencode"} {
+		if strings.Contains(view, banned) {
+			t.Errorf("expected picker to hide %q (local-only), got %q", banned, view)
+		}
 	}
 }
 
-func TestProviderSelectionSavesCodexAndRequestsRestart(t *testing.T) {
+// TestProviderSelectionSavesLocalKindAndRequestsRestart pins the local-
+// only provider-switch flow: the user picks mlx-lm, the model saves the
+// new kind, and the channel surfaces a restart notice. Cloud kinds are
+// removed from the picker source (ProviderOptions) so this is the only
+// path users can reach.
+func TestProviderSelectionSavesLocalKindAndRequestsRestart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := config.Save(config.Config{LLMProvider: "claude-code", Blueprint: "multi-agent-workflow-consulting"}); err != nil {
+	if err := config.Save(config.Config{LLMProvider: "ollama", Blueprint: "multi-agent-workflow-consulting"}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 
@@ -440,7 +453,7 @@ func TestProviderSelectionSavesCodexAndRequestsRestart(t *testing.T) {
 	m.picker.SetActive(true)
 	m.pickerMode = channelPickerProvider
 
-	next, cmd := m.Update(tui.PickerSelectMsg{Value: "codex", Label: "Codex CLI"})
+	next, cmd := m.Update(tui.PickerSelectMsg{Value: "mlx-lm", Label: "MLX-LM"})
 	if cmd == nil {
 		t.Fatal("expected provider selection to emit follow-up command")
 	}
@@ -455,16 +468,21 @@ func TestProviderSelectionSavesCodexAndRequestsRestart(t *testing.T) {
 	if done.posting {
 		t.Fatal("expected provider selection to clear posting state after completion")
 	}
-	if !strings.Contains(done.notice, "Claude teammate panes were stopped.") || !strings.Contains(done.notice, "Restart WUPHF to launch the headless Codex office runtime.") {
-		t.Fatalf("expected codex restart notice, got %q", done.notice)
+	// mlx-lm and ollama both use the headless OpenAI-compat runtime, so
+	// switching between them doesn't require the full WUPHF restart that
+	// claude-code↔codex needed. The user-visible signal is a "reloaded"
+	// notice instead. The "saved to config" assertion below is the real
+	// contract; the notice copy is informational.
+	if !strings.Contains(done.notice, "mlx-lm") {
+		t.Fatalf("expected switch notice to mention mlx-lm, got %q", done.notice)
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.LLMProvider != "codex" {
-		t.Fatalf("expected codex provider saved, got %q", cfg.LLMProvider)
+	if cfg.LLMProvider != "mlx-lm" {
+		t.Fatalf("expected mlx-lm provider saved, got %q", cfg.LLMProvider)
 	}
 }
 

@@ -60,14 +60,19 @@ func TestHandleConfigReportsProviderConfiguredSource(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode GET /config: %v", err)
 	}
-	if provider, _ := cfg["llm_provider"].(string); provider != "claude-code" {
-		t.Fatalf("expected default provider claude-code, got %q", provider)
+	if provider, _ := cfg["llm_provider"].(string); provider != "ollama" {
+		t.Fatalf("expected default provider ollama (local-first), got %q", provider)
 	}
 	if configured, _ := cfg["llm_provider_configured"].(bool); configured {
 		t.Fatalf("expected default provider to be reported as not configured: %s", rec.Body.String())
 	}
 
-	t.Setenv("WUPHF_LLM_PROVIDER", "codex")
+	// Use mlx-lm as the override-source fixture: under local-only the
+	// test exists to verify the env > config > default ordering, so any
+	// non-default local kind suffices. Cloud kinds (codex/opencode/
+	// claude-code) are explicitly rejected — covered by the dedicated
+	// rejection tests in internal/config.
+	t.Setenv("WUPHF_LLM_PROVIDER", "mlx-lm")
 	rec = configRequest(t, b, http.MethodGet, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET with env status = %d, body = %s", rec.Code, rec.Body.String())
@@ -76,15 +81,15 @@ func TestHandleConfigReportsProviderConfiguredSource(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode GET /config with env: %v", err)
 	}
-	if provider, _ := cfg["llm_provider"].(string); provider != "codex" {
-		t.Fatalf("expected env provider codex, got %q", provider)
+	if provider, _ := cfg["llm_provider"].(string); provider != "mlx-lm" {
+		t.Fatalf("expected env provider mlx-lm, got %q", provider)
 	}
 	if configured, _ := cfg["llm_provider_configured"].(bool); !configured {
 		t.Fatalf("expected env provider to be reported as configured: %s", rec.Body.String())
 	}
 
 	t.Setenv("WUPHF_LLM_PROVIDER", "")
-	rec = configRequest(t, b, http.MethodPost, `{"llm_provider":"codex"}`)
+	rec = configRequest(t, b, http.MethodPost, `{"llm_provider":"mlx-lm"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST seed provider: %d %s", rec.Code, rec.Body.String())
 	}
@@ -96,8 +101,8 @@ func TestHandleConfigReportsProviderConfiguredSource(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode GET /config with file provider: %v", err)
 	}
-	if provider, _ := cfg["llm_provider"].(string); provider != "codex" {
-		t.Fatalf("expected file provider codex, got %q", provider)
+	if provider, _ := cfg["llm_provider"].(string); provider != "mlx-lm" {
+		t.Fatalf("expected file provider mlx-lm, got %q", provider)
 	}
 	if configured, _ := cfg["llm_provider_configured"].(bool); !configured {
 		t.Fatalf("expected file provider to be reported as configured: %s", rec.Body.String())

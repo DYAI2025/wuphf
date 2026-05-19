@@ -44,7 +44,12 @@ func NewOpenAICompatStreamFn(kind, defaultBaseURL, defaultModel string) func(str
 	return func(agentSlug string) agent.StreamFn {
 		return func(msgs []agent.Message, tools []agent.AgentTool) <-chan agent.StreamChunk {
 			ch := make(chan agent.StreamChunk, 64)
-			go runOpenAICompatStream(context.Background(), ch, kind, defaultBaseURL, defaultModel, msgs, tools, "", agentSlug)
+			// Per-agent model lookup is resolved per-turn (not at closure
+			// build time) so /provider switches and config edits take
+			// effect on the next agent turn without restart — mirrors the
+			// runtime config re-read in ResolveProviderEndpoint.
+			perAgentModel := config.ResolveProviderModelForAgent(kind, agentSlug)
+			go runOpenAICompatStream(context.Background(), ch, kind, defaultBaseURL, defaultModel, msgs, tools, perAgentModel, agentSlug)
 			return ch
 		}
 	}

@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> `CLAUDE.md` is a symlink to `docs/agents/INSTRUCTIONS.md` — edit the target,
+> not the link. Same applies to `AGENTS.md`.
+
 ## What Is WUPHF
 
 WUPHF is a collaborative office for AI employees with a shared brain. It runs
@@ -26,6 +29,26 @@ go build -o wuphf ./cmd/wuphf
 
 # Run
 ./wuphf
+```
+
+`cmd/` also contains auxiliary binaries — build them by path when needed:
+`bench-slice-1`, `eval-prompts`, `review-bundle-handoff`, `wuphfbench`,
+`wuphf-oc-probe`, `wuphf-seed`, `youtube-script-packet`.
+
+### Workspace scripts (root `package.json`)
+
+Root-level shortcuts that fan out to `packages/*` and `apps/*`:
+
+```bash
+bun run broker:test                  # packages/broker tests
+bun run broker:typecheck
+bun run broker:check:invariants
+bun run desktop:dev                  # apps/desktop dev mode
+bun run desktop:build
+bun run desktop:test
+bun run desktop:check:ipc-allowlist
+bun run installer:build:dry-run
+bun run installer:check:secrets
 ```
 
 ### Test
@@ -130,6 +153,87 @@ All load-time optional. Core is `broker + launcher + headless runners + worktree
 - **Composio** (`--action provider`) — real-world actions
 - **OpenClaw** (`--provider openclaw-http`) — OpenClaw Gateway bridge
 - **Hermes** (`--provider hermes-agent`) — local Hermes gateway
+
+## Local-First Models (Default)
+
+The install-wide default LLM provider is **`ollama`**. First-run wuphf
+needs no API keys — only a running `ollama serve` daemon with the three
+models the agents are tuned for:
+
+| Model            | Default agent fit                   | Pull size |
+|------------------|-------------------------------------|-----------|
+| `gemma4:e4b`     | reasoning, planning, conversation   | ~3 GB     |
+| `qwen2.5-coder:7b` | code generation, refactoring      | ~5 GB     |
+| `llama3.1:8b`    | long context, content, design copy  | ~5 GB     |
+
+One-shot pull: `scripts/setup-local-models.sh` (add `--large` on 64 GB+
+machines to also grab `gemma4:26b`, `qwen2.5-coder:32b`, `llama3.1:70b`).
+
+### Per-agent model binding
+
+A single `ollama serve` can host all three models simultaneously. Pin a
+different model per agent slug to send the engineer to Qwen-coder and
+the designer to Llama without spinning up separate provider Kinds:
+
+```jsonc
+// ~/.wuphf/config.json
+{
+  "llm_provider": "ollama",
+  "provider_endpoints": {
+    "ollama": {
+      "model": "gemma4:e4b",
+      "models_by_agent": {
+        "eng": "qwen2.5-coder:14b",
+        "fe":  "qwen2.5-coder:7b",
+        "be":  "qwen2.5-coder:14b",
+        "designer": "llama3.1:8b",
+        "cmo": "llama3.1:8b",
+        "ceo": "gemma4:e4b"
+      }
+    }
+  }
+}
+```
+
+Env equivalents take precedence: `WUPHF_OLLAMA_MODEL_<SLUG>` (slug
+upper-cased, `-` → `_`). Cloud providers (claude-code, codex, opencode)
+remain available via `--provider` override and `WUPHF_LLM_PROVIDER`.
+
+## Open-Design Fallback (Designer / CMO / CEO)
+
+For visual work that needs real pixels (decks, posters, landing pages,
+dashboard mocks), the Designer, CMO, and CEO agents can call into a
+local open-design daemon (`https://github.com/DYAI2025/open-design`).
+Five MCP tools are exposed when the agent slug matches:
+
+- `open_design_list_skills` (filter by scenario)
+- `open_design_list_templates`
+- `open_design_create_artifact`
+- `open_design_list_artifacts`
+- `open_design_refresh_artifact`
+
+The agent decides — no router on the wuphf side. When the open-design
+daemon isn't running, every tool returns a one-line "start the daemon"
+message and the agent falls back to its local model.
+
+Setup: `scripts/setup-open-design.sh` clones open-design next to wuphf
+and runs `pnpm install`. Start the daemon manually with
+`cd ../open-design && pnpm tools-dev`. Override its URL via
+`WUPHF_OPEN_DESIGN_URL` (default `http://127.0.0.1:7878`).
+
+## Reference Docs
+
+Top-level docs worth reading before substantial work:
+
+| File | When to read |
+|------|--------------|
+| `ARCHITECTURE.md` | system-wide design before structural changes |
+| `DESIGN.md` / `DESIGN-NOTEBOOK.md` / `DESIGN-WIKI.md` | UX/product design decisions |
+| `PLAN.md`, `TODOS.md`, `CHANGELOG.md`, `PHASE-0-LEDGER.md` | current roadmap + recent shipped work |
+| `CONTRIBUTING.md` | contributor workflow details |
+| `FORKING.md` | downstream/fork policy |
+| `TESTING-WIKI.md` | flake handling, coverage conventions |
+| `.rules` | Nex MCP tooling context (proactive `<nex-context>` blocks) |
 
 ## Git and PR Rules
 
